@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>QA Agent</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="header">
+  <div class="container header-inner">
+    <div class="logo">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      QA Agent
+    </div>
+    <button class="btn-export hidden" id="export-btn">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Export Report
+    </button>
+  </div>
+</header>
+
+<main class="main">
+  <div class="container">
+
+    <!-- URL form -->
+    <div class="card" id="form-card">
+      <div class="form-heading">
+        <h2>Website QA Scanner</h2>
+        <p>Automatically crawls every page and checks for broken images, dead links, form issues, JS errors, performance, WordPress security, and more.</p>
+      </div>
+      <form id="scan-form" autocomplete="off">
+        <div class="form-row">
+          <div class="field">
+            <label for="url-input">Website URL</label>
+            <input type="url" id="url-input"
+              placeholder="https://example.com   or   http://localhost:8888"
+              required>
+          </div>
+          <button type="submit" class="btn-start" id="start-btn">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+            Scan Site
+          </button>
+        </div>
+        <p class="hint">No configuration needed — QA Agent discovers all pages automatically (up to 150 pages)</p>
+      </form>
+    </div>
+
+    <!-- Progress -->
+    <div class="card hidden" id="progress-card">
+      <div class="prog-top">
+        <span id="prog-title">Scanning…</span>
+        <span class="chip" id="status-chip">running</span>
+      </div>
+      <div class="prog-track"><div class="prog-bar" id="prog-bar"></div></div>
+
+      <!-- Scan steps -->
+      <div class="steps" id="scan-steps">
+        <div class="step" data-phase="crawl">
+          <div class="step-dot"></div>
+          <div class="step-label">Crawling</div>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-phase="links">
+          <div class="step-dot"></div>
+          <div class="step-label">Links</div>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-phase="images">
+          <div class="step-dot"></div>
+          <div class="step-label">Images</div>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-phase="ai">
+          <div class="step-dot"></div>
+          <div class="step-label">AI Review</div>
+        </div>
+        <div class="step-line"></div>
+        <div class="step" data-phase="wordpress">
+          <div class="step-dot"></div>
+          <div class="step-label">WordPress</div>
+        </div>
+      </div>
+
+      <div class="log" id="log"></div>
+    </div>
+
+    <!-- Results -->
+    <div id="results" class="hidden">
+
+      <!-- 4 summary numbers -->
+      <div class="summary-strip">
+        <div class="sum-box">
+          <span class="sum-n" id="s-total">0</span>
+          <span class="sum-l">Total Issues</span>
+        </div>
+        <div class="sum-box">
+          <span class="sum-n" id="s-pages">0</span>
+          <span class="sum-l">Pages Scanned</span>
+        </div>
+        <div class="sum-box">
+          <span class="sum-n" id="s-affected">0</span>
+          <span class="sum-l">Pages with Issues</span>
+        </div>
+        <div class="sum-box">
+          <span class="sum-n" id="s-avgload">—</span>
+          <span class="sum-l">Avg Load Time</span>
+        </div>
+      </div>
+
+      <!-- Category breakdown -->
+      <div class="card" id="breakdown"></div>
+
+      <!-- Per-page results -->
+      <div id="pages"></div>
+
+      <div class="bottom-bar">
+        <button class="btn-new" id="new-btn">Scan Another Site</button>
+      </div>
+
+    </div>
+  </div>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>
