@@ -252,7 +252,16 @@ input[type="url"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgb
 .shot-img.active { display: block; }
 
 /* ── Bottom bar ──────────────────────────────────────────────────────────── */
-.bottom-bar { margin-top: 1.5rem; display: flex; gap: .75rem; align-items: center; }
+.bottom-bar { margin-top: 1.5rem; display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+
+.btn-continue {
+  display: flex; align-items: center; gap: .4rem;
+  padding: .6rem 1.3rem; background: var(--accent); color: #fff;
+  border: none; border-radius: 8px; font-size: .9rem; font-weight: 700;
+  cursor: pointer; transition: background .15s;
+}
+.btn-continue:hover:not(:disabled) { background: var(--accent2); }
+.btn-continue:disabled { opacity: .55; cursor: not-allowed; }
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 @media (max-width: 640px) {

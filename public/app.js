@@ -4,6 +4,8 @@
   let pollTimer = null;
   let lastLogLen = 0;
   let currentScanId = null;
+  let isContinuation = false;
+  let prevPageCount = 0;
 
   const form      = document.getElementById('scan-form');
   const urlInput  = document.getElementById('url-input');
@@ -97,7 +99,15 @@
       if (scan.status === 'done' || scan.status === 'error') {
         clearInterval(pollTimer); pollTimer = null;
         resetBtn();
-        if (scan.status === 'done') renderResults(scan);
+        progCard.classList.add('hidden');
+        if (scan.status === 'done') {
+          if (isContinuation) {
+            appendNewPages(scan);
+          } else {
+            renderResults(scan);
+          }
+          isContinuation = false;
+        }
       }
     } catch { /* network blip */ }
   }
@@ -152,13 +162,102 @@
 
     // Pages — worst first
     pages.innerHTML = '';
+    prevPageCount = 0;
     const sorted = [...scan.pages].sort((a, b) =>
       (b.issues || []).length - (a.issues || []).length
     );
     sorted.forEach(p => pages.appendChild(buildPage(p, scan.id)));
 
+    updateContinueBtn(scan);
+
     results.classList.remove('hidden');
     results.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  function appendNewPages(scan) {
+    // Update summary numbers
+    const r = scan.report;
+    document.getElementById('s-total').textContent    = r.totalIssues;
+    document.getElementById('s-pages').textContent    = r.totalPages;
+    document.getElementById('s-affected').textContent = r.pagesWithIssues;
+    const loadTimes = scan.pages.map(p => p.loadTimeMs).filter(Boolean);
+    if (loadTimes.length) {
+      const avg = loadTimes.reduce((a, b) => a + b, 0) / loadTimes.length;
+      document.getElementById('s-avgload').textContent = (avg / 1000).toFixed(1) + 's';
+    }
+
+    // Update breakdown
+    const bd = document.getElementById('breakdown');
+    if (r.byType && Object.keys(r.byType).length) {
+      const tags = Object.entries(r.byType)
+        .sort((a, b) => b[1] - a[1])
+        .map(([label, n]) => `<span class="cat-tag">${esc(label)}: <b>${n}</b></span>`)
+        .join('');
+      bd.innerHTML = `<h3>Issues by Category</h3><div class="cat-tags">${tags}</div>`;
+      bd.classList.remove('hidden');
+    }
+
+    // Append only the new pages (slice from prevPageCount)
+    const newPages = scan.pages.slice(prevPageCount);
+    newPages.forEach(p => pages.appendChild(buildPage(p, scan.id)));
+
+    updateContinueBtn(scan);
+
+    // Scroll to first new card
+    const allCards = pages.querySelectorAll('.page-card');
+    allCards[prevPageCount]?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    prevPageCount = scan.pages.length;
+  }
+
+  function updateContinueBtn(scan) {
+    let btn = document.getElementById('continue-btn');
+    if (scan.hasMore && scan.remainingCount > 0) {
+      if (!btn) {
+        btn = document.createElement('button');
+        btn.id = 'continue-btn';
+        btn.className = 'btn-continue';
+        document.querySelector('.bottom-bar').prepend(btn);
+        btn.addEventListener('click', () => startContinue(scan.id));
+      }
+      btn.textContent = `Scan Next 12 Pages (${scan.remainingCount} remaining)`;
+      btn.disabled = false;
+    } else if (btn) {
+      btn.remove();
+    }
+  }
+
+  async function startContinue(id) {
+    const btn = document.getElementById('continue-btn');
+    if (btn) { btn.disabled = true; btn.textContent = 'Scanning…'; }
+
+    isContinuation = true;
+    prevPageCount = document.querySelectorAll('.page-card').length;
+    lastLogLen = 0;
+
+    // Show progress card above results
+    log.innerHTML = '';
+    progBar.style.width = '0%';
+    setChip('running');
+    updateSteps({});
+    progCard.classList.remove('hidden');
+    progCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    try {
+      const res = await fetch(`/api/scan/${id}/continue`, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error || 'Server error');
+      }
+    } catch (err) {
+      logLine('Error: ' + err.message, true);
+      setChip('error');
+      isContinuation = false;
+      if (btn) { btn.disabled = false; btn.textContent = `Scan Next 12 Pages`; }
+      return;
+    }
+
+    pollTimer = setInterval(() => poll(id), 2000);
+    poll(id);
   }
 
   function buildPage(page, scanId) {
@@ -313,8 +412,11 @@
     progCard.classList.add('hidden');
     results.classList.add('hidden');
     exportBtn.classList.add('hidden');
+    document.getElementById('continue-btn')?.remove();
     log.innerHTML = '';
     progBar.style.width = '0%';
+    isContinuation = false;
+    prevPageCount = 0;
     resetBtn();
     updateSteps({});
     if (clearUrl) { urlInput.value = ''; currentScanId = null; }

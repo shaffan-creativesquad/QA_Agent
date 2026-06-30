@@ -245,26 +245,46 @@ async function visitPage(browser, url, index, scanId, screenshotStore) {
   return result;
 }
 
-// ── Crawl entire site ─────────────────────────────────────────────────────────
-async function crawlSite(startUrl, scanId, screenshotStore, onProgress) {
+const BATCH_SIZE = 12;
+
+// ── Crawl entire site (or one batch of pages) ────────────────────────────────
+// opts.resumeQueue  — array of URLs to continue from (for batch continuation)
+// opts.visitedUrls  — Set of already-visited normalized URLs
+// opts.pageOffset   — screenshot index offset so filenames don't collide across batches
+// Returns { pages, remainingQueue, visitedUrls }
+async function crawlSite(startUrl, scanId, screenshotStore, onProgress, opts = {}) {
+  const { resumeQueue = null, visitedUrls = null, pageOffset = 0 } = opts;
+
   const base = new URL(startUrl);
-  const queued = new Set([normalizeUrl(startUrl)]);
-  const visited = new Set();
-  const queue = [startUrl];
+  const visited = visitedUrls || new Set();
+  const queued = new Set([...visited]);
+
+  let queue;
+  if (resumeQueue && resumeQueue.length > 0) {
+    queue = [...resumeQueue];
+  } else {
+    const startNorm = normalizeUrl(startUrl);
+    queued.add(startNorm);
+    queue = [startUrl];
+  }
+
   const results = [];
 
   const browser = await chromium.launch({ headless: true });
   try {
-    while (queue.length > 0 && results.length < MAX_PAGES) {
+    while (queue.length > 0 && results.length < BATCH_SIZE) {
       const url = queue.shift();
       const normalized = normalizeUrl(url);
       if (visited.has(normalized)) continue;
       visited.add(normalized);
 
-      const idx = results.length;
-      onProgress(`Scanning page ${idx + 1}: ${url}`, Math.min(Math.round((idx / Math.max(queue.length + idx + 1, 1)) * 55), 55));
+      const globalIdx = pageOffset + results.length;
+      onProgress(
+        `Scanning page ${globalIdx + 1}: ${url}`,
+        Math.min(Math.round((results.length / Math.max(queue.length + results.length + 1, 1)) * 55), 55)
+      );
 
-      const pageResult = await visitPage(browser, url, idx, scanId, screenshotStore);
+      const pageResult = await visitPage(browser, url, globalIdx, scanId, screenshotStore);
       results.push(pageResult);
 
       for (const href of (pageResult.seo?.links ?? [])) {
@@ -281,7 +301,7 @@ async function crawlSite(startUrl, scanId, screenshotStore, onProgress) {
     await browser.close();
   }
 
-  return results;
+  return { pages: results, remainingQueue: [...queue], visitedUrls: visited };
 }
 
 // ── Re-scan a single page (used by /api/scan/:id/rescan) ─────────────────────

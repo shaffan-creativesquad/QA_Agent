@@ -48,6 +48,8 @@ app.post('/api/scan', (req, res) => {
     pages: [],
     report: null,
     startedAt: new Date().toISOString(),
+    hasMore: false,
+    remainingCount: 0,
     phases: {
       crawl:     'pending',
       links:     'pending',
@@ -69,9 +71,27 @@ app.post('/api/scan', (req, res) => {
 app.get('/api/scan/:id', (req, res) => {
   const scan = scans.get(req.params.id);
   if (!scan) return res.status(404).json({ error: 'Scan not found' });
+  // Strip internal-only fields
+  const { _visitedUrls, _remainingQueue, ...pub } = scan;
   res.json({
-    ...scan,
+    ...pub,
     pages: scan.pages.map(({ _desktopBase64, imageUrls, ...rest }) => rest),
+  });
+});
+
+// ── Continue scan (next batch of pages) ──────────────────────────────────────
+app.post('/api/scan/:id/continue', (req, res) => {
+  const scan = scans.get(req.params.id);
+  if (!scan) return res.status(404).json({ error: 'Scan not found' });
+  if (scan.status === 'running') return res.status(400).json({ error: 'Scan already running' });
+  if (!scan._remainingQueue?.length) return res.status(400).json({ error: 'No more pages to scan' });
+
+  res.json({ ok: true });
+
+  runAnalysis(scan.id, [], { isContinuation: true }).catch(err => {
+    const s = scans.get(scan.id);
+    if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); }
+    console.error('[continue error]', err);
   });
 });
 
@@ -222,20 +242,15 @@ async function runScan(scanId, url) {
   const scan = scans.get(scanId);
   const log = (msg) => addLog(scan, msg);
 
-  log(`Starting full-site scan of ${url}`);
+  log(`Starting scan of ${url}`);
+  if (!process.env.GOOGLE_API_KEY) log('Warning: GOOGLE_API_KEY not set — AI analysis skipped');
 
-  if (!process.env.GOOGLE_API_KEY) {
-    log('Warning: GOOGLE_API_KEY not set — AI visual analysis will be skipped');
-  }
-
-  // ── Phase 1: Crawl ────────────────────────────────────────────────────────
+  // ── Phase 1: Crawl first batch ────────────────────────────────────────────
   setPhase(scan, 'crawl', 'running');
-  let pages;
+  let crawlResult;
   try {
-    pages = await crawlSite(url, scanId, screenshotStore, (msg, pct) => {
-      log(msg);
-      scan.progress = pct;
-      scan.pages = pages || [];
+    crawlResult = await crawlSite(url, scanId, screenshotStore, (msg, pct) => {
+      log(msg); scan.progress = pct;
     });
   } catch (err) {
     setPhase(scan, 'crawl', 'error');
@@ -244,19 +259,69 @@ async function runScan(scanId, url) {
     return;
   }
 
-  scan.pages = pages;
+  scan.pages.push(...crawlResult.pages);
+  scan._remainingQueue = crawlResult.remainingQueue;
+  scan._visitedUrls    = crawlResult.visitedUrls;
+  scan.hasMore         = crawlResult.remainingQueue.length > 0;
+  scan.remainingCount  = crawlResult.remainingQueue.length;
+
   scan.progress = 58;
   setPhase(scan, 'crawl', 'done');
-  log(`Crawl complete — ${pages.length} page(s) scanned.`);
+  log(`Crawl batch done — ${crawlResult.pages.length} page(s) scanned.${scan.hasMore ? ` ${scan.remainingCount} page(s) queued.` : ''}`);
 
-  // ── Phase 2: Broken links ─────────────────────────────────────────────────
+  await runAnalysis(scanId, crawlResult.pages);
+}
+
+// ── Shared analysis phases (links, images, AI, WP) ───────────────────────────
+// newPages = only the pages from the latest crawl batch (for AI/image)
+// isContinuation = true when called from /continue endpoint (crawls next batch first)
+async function runAnalysis(scanId, newPages, { isContinuation = false } = {}) {
+  const scan = scans.get(scanId);
+  const url  = scan.url;
+  const log  = (msg) => addLog(scan, msg);
+
+  if (isContinuation) {
+    // Crawl the next batch, then run analysis on those pages
+    scan.status = 'running';
+    scan.progress = 0;
+    scan.phases = { crawl: 'pending', links: 'pending', images: 'pending', ai: 'pending', wordpress: 'pending' };
+
+    setPhase(scan, 'crawl', 'running');
+    let crawlResult;
+    try {
+      crawlResult = await crawlSite(url, scanId, screenshotStore, (msg, pct) => {
+        log(msg); scan.progress = pct;
+      }, {
+        resumeQueue:  scan._remainingQueue,
+        visitedUrls:  scan._visitedUrls,
+        pageOffset:   scan.pages.length,
+      });
+    } catch (err) {
+      setPhase(scan, 'crawl', 'error');
+      log(`Crawl failed: ${err.message}`);
+      scan.status = 'error';
+      return;
+    }
+
+    scan.pages.push(...crawlResult.pages);
+    scan._remainingQueue = crawlResult.remainingQueue;
+    scan._visitedUrls    = crawlResult.visitedUrls;
+    scan.hasMore         = crawlResult.remainingQueue.length > 0;
+    scan.remainingCount  = crawlResult.remainingQueue.length;
+    newPages = crawlResult.pages;
+
+    scan.progress = 58;
+    setPhase(scan, 'crawl', 'done');
+    log(`Crawl batch done — ${newPages.length} more page(s). ${scan.hasMore ? `${scan.remainingCount} still queued.` : 'All pages discovered!'}`);
+  }
+
   scan.status = 'analyzing';
+
+  // ── Links ─────────────────────────────────────────────────────────────────
   setPhase(scan, 'links', 'running');
-
-  const crawledNorms = new Set(pages.map(p => normalizeUrl(p.url)));
-  const linkSources = new Map();
-
-  for (const page of pages) {
+  const crawledNorms = new Set(scan.pages.map(p => normalizeUrl(p.url)));
+  const linkSources  = new Map();
+  for (const page of newPages) {
     for (const href of (page.seo?.links ?? [])) {
       try {
         const abs = new URL(href, page.url).href;
@@ -264,83 +329,72 @@ async function runScan(scanId, url) {
       } catch { /* skip */ }
     }
   }
-
   const linksToCheck = [...linkSources.keys()]
-    .filter(u => !crawledNorms.has(normalizeUrl(u)))
-    .slice(0, 200);
-
+    .filter(u => !crawledNorms.has(normalizeUrl(u))).slice(0, 200);
   const linkIssues = await checkLinks(linksToCheck, log);
   for (const issue of linkIssues) {
-    const src = linkSources.get(issue.url) ?? pages[0];
+    const src = linkSources.get(issue.url) ?? newPages[0];
     if (src) src.issues.push(issue);
   }
-
   scan.progress = 65;
   setPhase(scan, 'links', 'done');
   log(`Link check done — ${linkIssues.length} broken link(s).`);
 
-  // ── Phase 3: Image size audit ─────────────────────────────────────────────
+  // ── Image sizes ───────────────────────────────────────────────────────────
   setPhase(scan, 'images', 'running');
   log('Auditing image file sizes...');
-
   const origin = new URL(url).origin;
   let totalImgIssues = 0;
-
-  for (const page of pages) {
+  for (const page of newPages) {
     if (!page.imageUrls?.length) continue;
-    const absUrls = page.imageUrls.map(u => {
-      try { return new URL(u, origin).href; } catch { return null; }
-    }).filter(Boolean);
-
+    const absUrls = page.imageUrls.map(u => { try { return new URL(u, origin).href; } catch { return null; } }).filter(Boolean);
     const imgIssues = await checkImageSizes(absUrls, page.url);
     page.issues.push(...imgIssues);
     totalImgIssues += imgIssues.length;
     delete page.imageUrls;
   }
-
   scan.progress = 70;
   setPhase(scan, 'images', 'done');
-  log(`Image audit done — ${totalImgIssues} oversized image(s) found.`);
+  log(`Image audit done — ${totalImgIssues} oversized image(s).`);
 
-  // ── Phase 4: AI visual analysis ───────────────────────────────────────────
+  // ── AI visual analysis ────────────────────────────────────────────────────
   setPhase(scan, 'ai', 'running');
-  log('Running AI visual analysis on every page...');
-
-  for (let i = 0; i < pages.length; i++) {
-    const page = pages[i];
-    log(`AI reviewing (${i + 1}/${pages.length}): ${page.url}`);
+  log('Running AI visual analysis...');
+  for (let i = 0; i < newPages.length; i++) {
+    const page = newPages[i];
+    log(`AI reviewing (${i + 1}/${newPages.length}): ${page.url}`);
     const aiIssues = await analyzeScreenshot(page._desktopBase64, page.url);
     page.issues.push(...aiIssues);
     if (aiIssues.length > 0) log(`  → ${aiIssues.length} visual issue(s)`);
     delete page._desktopBase64;
-    scan.progress = 70 + Math.round(((i + 1) / pages.length) * 20);
+    scan.progress = 70 + Math.round(((i + 1) / newPages.length) * 20);
   }
-
   setPhase(scan, 'ai', 'done');
 
-  // ── Phase 5: WordPress security ───────────────────────────────────────────
-  const isWP = pages.some(p => p.wpDetected);
-  if (isWP) {
+  // ── WordPress security (only on first batch or if newly detected) ─────────
+  const isWP = scan.pages.some(p => p.wpDetected);
+  const wpAlreadyChecked = scan.phases.wordpress === 'done' || scan.phases.wordpress === 'error';
+  if (isWP && !wpAlreadyChecked) {
     setPhase(scan, 'wordpress', 'running');
     log('WordPress detected — running security checks...');
     try {
       const wpIssues = await checkWordPressSecurity(url);
-      if (pages.length > 0) pages[0].issues.push(...wpIssues);
+      if (scan.pages.length > 0) scan.pages[0].issues.push(...wpIssues);
       setPhase(scan, 'wordpress', 'done');
-      log(`WordPress security check done — ${wpIssues.length} issue(s) found.`);
+      log(`WordPress security check done — ${wpIssues.length} issue(s).`);
     } catch (err) {
       setPhase(scan, 'wordpress', 'error');
       log(`WordPress check error: ${err.message}`);
     }
-  } else {
+  } else if (!isWP) {
     setPhase(scan, 'wordpress', 'skipped');
   }
 
   // ── Report ─────────────────────────────────────────────────────────────────
-  scan.report = buildReport(scan.pages);
-  scan.status = 'done';
+  scan.report   = buildReport(scan.pages);
+  scan.status   = 'done';
   scan.progress = 100;
-  log(`Done — ${scan.report.totalIssues} issue(s) across ${scan.report.totalPages} page(s).`);
+  log(`Batch done — ${scan.report.totalIssues} issue(s) across ${scan.report.totalPages} page(s) so far.${scan.hasMore ? ` (${scan.remainingCount} pages remaining)` : ' All pages complete!'}`);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
