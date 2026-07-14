@@ -6,6 +6,7 @@ const TYPE_LABELS = {
   image:         'Images',
   button:        'Buttons',
   dead_link:     'Dead Links',
+  seo_heading:   'SEO Headings (H1/H2)',
   form:          'Forms',
   html:          'HTML Structure',
   visual:        'Visual (AI)',

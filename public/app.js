@@ -383,10 +383,11 @@
 
   const PILL_LABELS = {
     placeholder: 'Placeholder', broken_image: 'Broken Image', image: 'Image',
-    button: 'Button', dead_link: 'Dead Link', form: 'Form', html: 'HTML',
-    visual: 'Visual', broken_link: 'Broken Link', missing_resource: 'Missing File',
-    js_error: 'JS Error', http_error: 'HTTP Error', load_failure: 'Load Fail',
-    performance: 'Performance', security: 'Security', wp_security: 'WP Security',
+    button: 'Button', dead_link: 'Dead Link', seo_heading: 'SEO Heading',
+    form: 'Form', html: 'HTML', visual: 'Visual', broken_link: 'Broken Link',
+    missing_resource: 'Missing File', js_error: 'JS Error', http_error: 'HTTP Error',
+    load_failure: 'Load Fail', performance: 'Performance', security: 'Security',
+    wp_security: 'WP Security',
   };
   function pillLabel(t) { return PILL_LABELS[t] || t; }
 

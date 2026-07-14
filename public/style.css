@@ -217,6 +217,7 @@ input[type="url"]:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgb
 .type-image            { background: #fff7ed; color: #9a3412;  border-color: #fed7aa; }
 .type-button           { background: #ede9fe; color: #5b21b6;  border-color: #ddd6fe; }
 .type-dead_link        { background: #ffedd5; color: #9a3412;  border-color: #fed7aa; }
+.type-seo_heading      { background: #f0fdf4; color: #065f46;  border-color: #6ee7b7; }
 .type-form             { background: #ecfdf5; color: #065f46;  border-color: #a7f3d0; }
 .type-html             { background: #f0f9ff; color: #075985;  border-color: #bae6fd; }
 .type-visual           { background: #fdf4ff; color: #7e22ce;  border-color: #e9d5ff; }

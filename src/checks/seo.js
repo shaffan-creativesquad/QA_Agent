@@ -33,6 +33,13 @@ async function checkPage(page, pageUrl) {
       return (el.textContent || '').replace(/\s+/g, ' ').trim();
     }
 
+    // ── Headings (SEO) ─────────────────────────────────────────────────────
+    const h1Els = [...document.querySelectorAll('h1')].filter(h => !hidden(h));
+    const h2Els = [...document.querySelectorAll('h2')].filter(h => !hidden(h));
+    const h1Count = h1Els.length;
+    const h2Count = h2Els.length;
+    const h1Texts = h1Els.map(h => visText(h).slice(0, 80)).filter(Boolean);
+
     // ── Placeholder / dummy text ────────────────────────────────────────────
     const loremIssues = [];
     const LOREM_PATTERNS = [/lorem ipsum/i, /dolor sit amet/i, /\[placeholder\]/i,
@@ -40,14 +47,13 @@ async function checkPage(page, pageUrl) {
     const WP_DEFAULTS = [/^hello world[!.]?$/i, /just another wordpress site/i, /^sample page$/i];
 
     document.querySelectorAll('p, li, h1, h2, h3, h4, td, div, span').forEach(el => {
-      if (hidden(el) || el.querySelectorAll('p, div').length > 0) return; // skip containers
+      if (hidden(el) || el.querySelectorAll('p, div').length > 0) return;
       const t = visText(el);
       if (t.length < 4) return;
       for (const pat of LOREM_PATTERNS) {
         if (pat.test(t)) { loremIssues.push(t.slice(0, 100)); break; }
       }
     });
-    // WP defaults in title or body
     const pageTitle = document.title || '';
     const bodyText = (document.body?.textContent || '');
     for (const pat of WP_DEFAULTS) {
@@ -89,7 +95,6 @@ async function checkPage(page, pageUrl) {
         return;
       }
 
-      // Detect disconnected: has action text, no handler, not in form, no data-* attributes
       const actionRx = /^(submit|send|save|buy|order|add|delete|confirm|cancel|apply|search|download|upload|login|sign up|register|get started|contact|book|reserve)/i;
       const hasDataAttr = [...btn.attributes].some(a => a.name.startsWith('data-')) ||
         parentHasHandler(btn, 8);
@@ -98,9 +103,11 @@ async function checkPage(page, pageUrl) {
       }
     });
 
-    // ── Links ──────────────────────────────────────────────────────────────
-    const deadLinks = [];
-    const emptyLinks = [];
+    // ── Hash / Dead Links ──────────────────────────────────────────────────
+    // Flag any visible link with href="#" or empty href that has real text and no JS handler.
+    // This is the most common WordPress dev mistake — forgetting to add real URLs.
+    const hashLinks = [];   // href="#" — link goes nowhere
+    const emptyLinks = [];  // invisible links
     const allHrefs = [];
 
     document.querySelectorAll('a').forEach(a => {
@@ -115,32 +122,18 @@ async function checkPage(page, pageUrl) {
         allHrefs.push(href);
       }
 
-      // Dead link — only flag if clearly unintentional
-      const isDead = href === '#' || href === '' ||
+      // Hash / empty links — the "forgot to add URL" problem
+      const isHashOrEmpty = href === '#' || href === '' ||
         href === 'javascript:void(0)' || href === 'javascript:;' || href === 'javascript:void(0);';
-      if (isDead && text.length > 1) {
-        // Skip: inside nav/menu (JS routing is intentional there)
-        const inNav = !!(a.closest('nav, [role="navigation"], .menu, .nav, .navigation, .navbar, .wp-menu-item, header'));
-        if (inNav) return;
 
-        // Skip: element or any ancestor has data-* attribute (JS framework pattern)
-        function hasDataAttr(el, depth = 6) {
-          let node = el;
-          for (let i = 0; i < depth && node && node !== document.body; i++, node = node.parentElement) {
-            if ([...node.attributes].some(a => a.name.startsWith('data-'))) return true;
-          }
-          return false;
-        }
-        if (hasDataAttr(a)) return;
-
-        // Skip: parent chain has a JS handler (check deeper — event delegation)
-        if (hasHandler(a) || parentHasHandler(a, 8)) return;
-
-        deadLinks.push(text.slice(0, 60));
+      if (isHashOrEmpty && text.length > 1) {
+        // Skip if there's a genuine JS handler on the element or a parent (intentional behaviour)
+        if (hasHandler(a) || parentHasHandler(a, 6)) return;
+        hashLinks.push({ text: text.slice(0, 80), href });
       }
 
-      // Invisible link
-      if (!isDead && href && !text && !ariaLabel && !a.querySelector('img[alt]:not([alt=""])')) {
+      // Invisible link — has URL but no visible text or image
+      if (!isHashOrEmpty && href && !text && !ariaLabel && !a.querySelector('img[alt]:not([alt=""])')) {
         emptyLinks.push(href.slice(0, 80));
       }
     });
@@ -197,11 +190,13 @@ async function checkPage(page, pageUrl) {
     });
 
     return {
+      h1Count, h2Count, h1Texts,
       loremIssues: [...new Set(loremIssues)].slice(0, 6),
       brokenImgs, placeholderImgs,
       missingAlt: missingAlt.length,
       emptyBtns, deadBtns: deadBtns.slice(0, 8),
-      deadLinks: deadLinks.slice(0, 10), emptyLinks: emptyLinks.slice(0, 5),
+      hashLinks: hashLinks.slice(0, 15),
+      emptyLinks: emptyLinks.slice(0, 5),
       formProblems, dupIds: dupIds.slice(0, 6), consoleOnly,
       links: [...new Set(allHrefs)],
       wpDetected, wpVersion,
@@ -209,7 +204,33 @@ async function checkPage(page, pageUrl) {
     };
   }, PLACEHOLDER_IMG_HOSTS);
 
-  // ── Build issues (no severity) ─────────────────────────────────────────────
+  // ── Build issues ───────────────────────────────────────────────────────────
+
+  // Heading structure (SEO)
+  if (data.h1Count === 0) {
+    issues.push({
+      severity: 'critical',
+      type: 'seo_heading',
+      message: 'Missing H1: This page has no H1 heading — every page must have exactly one H1 for SEO',
+      url: pageUrl,
+    });
+  } else if (data.h1Count > 1) {
+    issues.push({
+      severity: 'major',
+      type: 'seo_heading',
+      message: `Multiple H1s: Found ${data.h1Count} H1 headings — SEO requires exactly 1. H1s found: "${data.h1Texts.join('" | "')}"`,
+      url: pageUrl,
+    });
+  }
+
+  if (data.h2Count > 10) {
+    issues.push({
+      severity: 'minor',
+      type: 'seo_heading',
+      message: `Too many H2s: Found ${data.h2Count} H2 headings — recommended maximum is 10 per page`,
+      url: pageUrl,
+    });
+  }
 
   for (const t of data.loremIssues) {
     issues.push({ type: 'placeholder', message: `Placeholder text found: "${t}"`, url: pageUrl });
@@ -232,8 +253,15 @@ async function checkPage(page, pageUrl) {
     issues.push({ type: 'button', message: `Button "${text}" looks like an action button but has no click handler or form connection`, url: pageUrl });
   }
 
-  for (const text of data.deadLinks) {
-    issues.push({ type: 'dead_link', message: `Dead link with no destination: "${text}" (href="#" or empty, no JS handler)`, url: pageUrl });
+  // Hash / dead links — WordPress "forgot to add URL" issue
+  for (const { text, href } of data.hashLinks) {
+    const hrefLabel = href === '' ? 'empty href' : `href="${href}"`;
+    issues.push({
+      severity: 'major',
+      type: 'dead_link',
+      message: `Dead link — "${text}" has ${hrefLabel} and goes nowhere. Add the real URL or a click handler.`,
+      url: pageUrl,
+    });
   }
   if (data.emptyLinks.length > 0) {
     issues.push({ type: 'dead_link', message: `${data.emptyLinks.length} invisible link(s) — has href but no text (broken anchor)`, url: pageUrl });

@@ -148,6 +148,7 @@ app.get('/api/scan/:id/export', (req, res) => {
   .time{color:#718096;font-size:.75rem;font-weight:400}
   .ok{color:#15803d;font-weight:500;padding:.6rem}
   .pill{font-size:.65rem;font-weight:700;padding:.15rem .45rem;border-radius:100px;white-space:nowrap;border:1px solid;width:1%;padding-right:.5rem}
+  .pill-seo_heading{background:#ecfdf5;color:#065f46;border-color:#6ee7b7}
   .pill-security,.pill-wp_security{background:#fff1f2;color:#9f1239;border-color:#fecdd3}
   .pill-placeholder{background:#fef3c7;color:#92400e;border-color:#fde68a}
   .pill-broken_image{background:#fee2e2;color:#991b1b;border-color:#fecaca}
@@ -331,7 +332,9 @@ async function runAnalysis(scanId, newPages, { isContinuation = false } = {}) {
   }
   const linksToCheck = [...linkSources.keys()]
     .filter(u => !crawledNorms.has(normalizeUrl(u))).slice(0, 200);
-  const linkIssues = await checkLinks(linksToCheck, log);
+  const referersByUrl = {};
+  for (const [href, page] of linkSources) referersByUrl[href] = page.url;
+  const linkIssues = await checkLinks(linksToCheck, log, referersByUrl);
   for (const issue of linkIssues) {
     const src = linkSources.get(issue.url) ?? newPages[0];
     if (src) src.issues.push(issue);
@@ -401,10 +404,11 @@ async function runAnalysis(scanId, newPages, { isContinuation = false } = {}) {
 
 const PILL_LABELS = {
   placeholder: 'Placeholder', broken_image: 'Broken Image', image: 'Image',
-  button: 'Button', dead_link: 'Dead Link', form: 'Form', html: 'HTML',
-  visual: 'Visual', broken_link: 'Broken Link', missing_resource: 'Missing File',
-  js_error: 'JS Error', http_error: 'HTTP Error', load_failure: 'Load Fail',
-  performance: 'Performance', security: 'Security', wp_security: 'WP Security',
+  button: 'Button', dead_link: 'Dead Link', seo_heading: 'SEO Heading',
+  form: 'Form', html: 'HTML', visual: 'Visual', broken_link: 'Broken Link',
+  missing_resource: 'Missing File', js_error: 'JS Error', http_error: 'HTTP Error',
+  load_failure: 'Load Fail', performance: 'Performance', security: 'Security',
+  wp_security: 'WP Security',
 };
 function pillLabel(t) { return PILL_LABELS[t] || t; }
 function esc(s) { return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
