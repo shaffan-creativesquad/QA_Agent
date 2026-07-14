@@ -1,7 +1,7 @@
 'use strict';
 
-const { chromium } = require('playwright');
 const { checkSEO } = require('./checks/seo');
+const store = require('./store');
 
 const MAX_PAGES = 150;
 
@@ -26,26 +26,50 @@ function normalizeUrl(href) {
   } catch { return href; }
 }
 
-// ── Inject CSS outlines onto problematic elements, take screenshot, clean up ──
+// ── Launch browser (puppeteer-core + sparticuz on Vercel, system Chrome locally) ──
+async function launchBrowser() {
+  const puppeteer = require('puppeteer-core');
+
+  let executablePath;
+  let args = [];
+
+  if (process.env.VERCEL || process.env.USE_SERVERLESS_CHROMIUM) {
+    const chromiumPkg = require('@sparticuz/chromium');
+    executablePath = await chromiumPkg.executablePath();
+    args = chromiumPkg.args;
+  } else {
+    // Local dev — use system Chrome/Chromium
+    executablePath = process.env.CHROME_PATH || (
+      process.platform === 'win32'
+        ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+        : process.platform === 'darwin'
+          ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+          : '/usr/bin/google-chrome-stable'
+    );
+    args = ['--no-sandbox', '--disable-setuid-sandbox'];
+  }
+
+  return puppeteer.launch({
+    executablePath,
+    args,
+    headless: true,
+    ignoreHTTPSErrors: true,
+  });
+}
+
+// ── Annotated screenshot: outline problematic elements, capture, clean up ─────
 async function takeAnnotatedScreenshot(page) {
-  // Mark problematic elements with data-qa-type attribute
   const count = await page.evaluate((placeholderHosts) => {
-    // Clear previous marks
     document.querySelectorAll('[data-qa-type]').forEach(el => el.removeAttribute('data-qa-type'));
 
     let n = 0;
-    function mark(el, type) {
-      if (!el) return;
-      el.setAttribute('data-qa-type', type);
-      n++;
-    }
+    function mark(el, type) { if (!el) return; el.setAttribute('data-qa-type', type); n++; }
     function hasHandler(el) {
       return !!(el.onclick || el.getAttribute('onclick') ||
         el.getAttribute('data-action') || el.getAttribute('data-toggle') ||
         el.getAttribute('data-bs-toggle') || el.getAttribute('@click') || el.getAttribute('ng-click'));
     }
 
-    // Broken & placeholder images
     document.querySelectorAll('img').forEach(img => {
       const src = (img.src || '').toLowerCase();
       const broken = img.complete && img.naturalWidth === 0 && src && !src.startsWith('data:');
@@ -54,7 +78,6 @@ async function takeAnnotatedScreenshot(page) {
       else if (placeholder) mark(img, 'placeholder');
     });
 
-    // Empty buttons
     document.querySelectorAll('button, [role="button"]').forEach(btn => {
       const text = (btn.textContent || '').trim();
       const label = btn.getAttribute('aria-label') || '';
@@ -62,7 +85,6 @@ async function takeAnnotatedScreenshot(page) {
       if (!text && !label && !hasIcon) mark(btn, 'empty-btn');
     });
 
-    // Dead links (href="#" / empty / javascript: with no handler)
     document.querySelectorAll('a').forEach(a => {
       const href = a.getAttribute('href') || '';
       const dead = href === '#' || href === '' || href === 'javascript:void(0)' ||
@@ -71,14 +93,12 @@ async function takeAnnotatedScreenshot(page) {
       if (dead && !hasHandler(a) && text.length > 1) mark(a, 'dead-link');
     });
 
-    // Lorem ipsum text
     const LOREM = [/lorem ipsum/i, /dolor sit amet/i];
     document.querySelectorAll('p, h1, h2, h3, h4, li, td').forEach(el => {
       const t = el.textContent || '';
       if (LOREM.some(r => r.test(t))) mark(el, 'placeholder-text');
     });
 
-    // Disconnected forms
     document.querySelectorAll('form').forEach(form => {
       const fields = form.querySelectorAll('input:not([type=hidden]), textarea, select');
       const hasSubmit = !!form.querySelector('[type=submit], button:not([type=button]):not([type=reset])');
@@ -92,25 +112,14 @@ async function takeAnnotatedScreenshot(page) {
 
   if (!count) return null;
 
-  // Inject highlight styles — CSS outlines work on ALL elements including fullPage screenshots
   await page.addStyleTag({ content: `
-    [data-qa-type] {
-      outline: 4px solid #ef4444 !important;
-      outline-offset: 2px !important;
-    }
-    [data-qa-type="dead-link"],
-    [data-qa-type="dead-form"] {
-      outline-color: #f97316 !important;
-    }
-    [data-qa-type="placeholder-text"],
-    [data-qa-type="placeholder"] {
-      outline-color: #f59e0b !important;
-    }
+    [data-qa-type] { outline: 4px solid #ef4444 !important; outline-offset: 2px !important; }
+    [data-qa-type="dead-link"], [data-qa-type="dead-form"] { outline-color: #f97316 !important; }
+    [data-qa-type="placeholder-text"], [data-qa-type="placeholder"] { outline-color: #f59e0b !important; }
   ` });
 
   const buf = await page.screenshot({ fullPage: true, type: 'jpeg', quality: 85 });
 
-  // Cleanup
   await page.evaluate(() => {
     document.querySelectorAll('[data-qa-type]').forEach(el => el.removeAttribute('data-qa-type'));
     document.querySelectorAll('style').forEach(s => {
@@ -121,8 +130,8 @@ async function takeAnnotatedScreenshot(page) {
   return buf;
 }
 
-// ── Visit single page ─────────────────────────────────────────────────────────
-async function visitPage(browser, url, index, scanId, screenshotStore) {
+// ── Visit a single page ───────────────────────────────────────────────────────
+async function visitPage(browser, url, index, scanId) {
   const result = {
     url, status: null, loadTimeMs: null,
     issues: [],
@@ -130,20 +139,16 @@ async function visitPage(browser, url, index, scanId, screenshotStore) {
     seo: null, _desktopBase64: null,
   };
 
-  const context = await browser.newContext({
-    viewport: VIEWPORTS.desktop,
-    ignoreHTTPSErrors: true,
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 QA-Agent/1.0',
-  });
-  const page = await context.newPage();
+  const page = await browser.newPage();
+  await page.setViewport(VIEWPORTS.desktop);
+  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 QA-Agent/1.0');
 
   const jsErrors = [];
-  const failedResources = []; // sub-resources that 404/500
+  const failedResources = [];
 
   page.on('console', msg => {
     if (msg.type() !== 'error') return;
     const text = msg.text();
-    // Skip the generic "Failed to load resource" — we capture those via response events with the actual URL
     if (/failed to load resource/i.test(text)) return;
     jsErrors.push(text);
   });
@@ -151,11 +156,10 @@ async function visitPage(browser, url, index, scanId, screenshotStore) {
 
   page.on('response', response => {
     const resUrl = response.url();
-    // Skip the main page itself
     if (normalizeUrl(resUrl) === normalizeUrl(url)) return;
     const status = response.status();
     if (status >= 400) {
-      const type = response.request().resourceType(); // image, stylesheet, script, font, fetch, xhr...
+      const type = response.request().resourceType();
       failedResources.push({ resUrl, status, type });
     }
   });
@@ -164,7 +168,7 @@ async function visitPage(browser, url, index, scanId, screenshotStore) {
     const t0 = Date.now();
     let response;
     try {
-      response = await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+      response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
     } catch (err) {
       result.issues.push({ type: 'load_failure', message: `Page failed to load: ${err.message}`, url });
       return result;
@@ -180,66 +184,53 @@ async function visitPage(browser, url, index, scanId, screenshotStore) {
       result.issues.push({ type: 'performance', message: `Slow page load: ${(result.loadTimeMs / 1000).toFixed(1)}s`, url });
     }
 
-    // Dev checks (placeholder, buttons, links, forms, WP detection)
     const check = await checkSEO(page, url);
     result.seo = { links: check.links };
     result.wpDetected = check.wpDetected || false;
     result.imageUrls = check.imageUrls || [];
     result.issues.push(...check.issues);
 
-    // Failed sub-resources (images, scripts, CSS, fonts, API calls)
     const RESOURCE_LABELS = {
-      image:      'Image file',
-      stylesheet: 'CSS file',
-      script:     'JS file',
-      font:       'Font file',
-      fetch:      'API/fetch call',
-      xhr:        'AJAX/XHR call',
-      media:      'Media file',
-      document:   'Document',
+      image: 'Image file', stylesheet: 'CSS file', script: 'JS file',
+      font: 'Font file', fetch: 'API/fetch call', xhr: 'AJAX/XHR call',
+      media: 'Media file', document: 'Document',
     };
     for (const { resUrl, status, type } of failedResources.slice(0, 10)) {
       const label = RESOURCE_LABELS[type] || 'Resource';
-      // Extract just the filename/path for readability
       let shortUrl = resUrl;
       try { shortUrl = new URL(resUrl).pathname + new URL(resUrl).search; } catch {}
-      result.issues.push({
-        type: 'missing_resource',
-        message: `${label} not found (${status}): ${shortUrl}`,
-        url,
-      });
+      result.issues.push({ type: 'missing_resource', message: `${label} not found (${status}): ${shortUrl}`, url });
     }
 
-    // JS errors (actual script errors, not resource load failures)
     for (const err of [...new Set(jsErrors)].slice(0, 5)) {
       result.issues.push({ type: 'js_error', message: `JS error: ${err.slice(0, 300)}`, url });
     }
 
-    // ── Annotated screenshot (CSS outline approach) ────────────────────────
-    await page.setViewportSize(VIEWPORTS.desktop);
-    await page.waitForTimeout(300);
+    // ── Annotated screenshot ──────────────────────────────────────────────────
+    await page.setViewport(VIEWPORTS.desktop);
+    await new Promise(r => setTimeout(r, 300));
 
     const annotatedBuf = await takeAnnotatedScreenshot(page);
     if (annotatedBuf) {
       const fname = `page-${index}-annotated.jpg`;
-      screenshotStore.set(`${scanId}/${fname}`, annotatedBuf);
+      await store.setScreenshot(`${scanId}/${fname}`, annotatedBuf);
       result.screenshots.annotated = `/screenshots/${scanId}/${fname}`;
     }
 
-    // ── Regular screenshots at all viewports ──────────────────────────────
+    // ── Viewport screenshots ──────────────────────────────────────────────────
     for (const [vp, size] of Object.entries(VIEWPORTS)) {
-      await page.setViewportSize(size);
-      await page.waitForTimeout(250);
+      await page.setViewport(size);
+      await new Promise(r => setTimeout(r, 250));
       const buf = await page.screenshot({ fullPage: true, type: 'jpeg', quality: 80 });
       const fname = `page-${index}-${vp}.jpg`;
-      screenshotStore.set(`${scanId}/${fname}`, buf);
+      await store.setScreenshot(`${scanId}/${fname}`, buf);
       result.screenshots[vp] = `/screenshots/${scanId}/${fname}`;
       if (vp === 'desktop') result._desktopBase64 = buf.toString('base64');
     }
   } catch (err) {
     result.issues.push({ type: 'load_failure', message: `Unexpected error: ${err.message}`, url });
   } finally {
-    await context.close();
+    await page.close();
   }
 
   return result;
@@ -247,12 +238,8 @@ async function visitPage(browser, url, index, scanId, screenshotStore) {
 
 const BATCH_SIZE = 12;
 
-// ── Crawl entire site (or one batch of pages) ────────────────────────────────
-// opts.resumeQueue  — array of URLs to continue from (for batch continuation)
-// opts.visitedUrls  — Set of already-visited normalized URLs
-// opts.pageOffset   — screenshot index offset so filenames don't collide across batches
-// Returns { pages, remainingQueue, visitedUrls }
-async function crawlSite(startUrl, scanId, screenshotStore, onProgress, opts = {}) {
+// ── Crawl entire site (or resume from a batch) ────────────────────────────────
+async function crawlSite(startUrl, scanId, onProgress, opts = {}) {
   const { resumeQueue = null, visitedUrls = null, pageOffset = 0 } = opts;
 
   const base = new URL(startUrl);
@@ -269,8 +256,8 @@ async function crawlSite(startUrl, scanId, screenshotStore, onProgress, opts = {
   }
 
   const results = [];
+  const browser = await launchBrowser();
 
-  const browser = await chromium.launch({ headless: true });
   try {
     while (queue.length > 0 && results.length < BATCH_SIZE) {
       const url = queue.shift();
@@ -284,7 +271,7 @@ async function crawlSite(startUrl, scanId, screenshotStore, onProgress, opts = {
         Math.min(Math.round((results.length / Math.max(queue.length + results.length + 1, 1)) * 55), 55)
       );
 
-      const pageResult = await visitPage(browser, url, globalIdx, scanId, screenshotStore);
+      const pageResult = await visitPage(browser, url, globalIdx, scanId);
       results.push(pageResult);
 
       for (const href of (pageResult.seo?.links ?? [])) {
@@ -304,11 +291,11 @@ async function crawlSite(startUrl, scanId, screenshotStore, onProgress, opts = {
   return { pages: results, remainingQueue: [...queue], visitedUrls: visited };
 }
 
-// ── Re-scan a single page (used by /api/scan/:id/rescan) ─────────────────────
-async function scanSinglePage(url, scanId, screenshotStore, index) {
-  const browser = await chromium.launch({ headless: true });
+// ── Re-scan a single page ─────────────────────────────────────────────────────
+async function scanSinglePage(url, scanId, index) {
+  const browser = await launchBrowser();
   try {
-    return await visitPage(browser, url, index, scanId, screenshotStore);
+    return await visitPage(browser, url, index, scanId);
   } finally {
     await browser.close();
   }
