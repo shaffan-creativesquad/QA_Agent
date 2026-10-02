@@ -71,9 +71,14 @@ async function checkPage(page, pageUrl) {
       if (hidden(img)) return;
       const src = (img.getAttribute('src') || img.src || '').toLowerCase();
       if (!src || src.startsWith('data:')) return;
+      // Next.js /_next/image URLs are already optimised — skip them
+      if (src.includes('/_next/image')) return;
 
       const isPlaceholder = placeholderHosts.some(h => src.includes(h));
-      const isBroken = img.complete && img.naturalWidth === 0;
+      // Lazy images outside the viewport may not have loaded yet — don't flag as broken
+      const isLazy = img.getAttribute('loading') === 'lazy';
+      const nearViewport = img.getBoundingClientRect().top < window.innerHeight * 2;
+      const isBroken = img.complete && img.naturalWidth === 0 && (!isLazy || nearViewport);
 
       if (isBroken) brokenImgs.push(src.slice(0, 120));
       else if (isPlaceholder) placeholderImgs.push(src.slice(0, 120));
@@ -147,9 +152,18 @@ async function checkPage(page, pageUrl) {
       if (!fields.length) return;
 
       const hasSubmit = !!form.querySelector('[type=submit], button:not([type=button]):not([type=reset])');
-      const hasAction = !!(form.getAttribute('action') && form.getAttribute('action') !== '#');
+      // action="" is valid HTML (submits to current URL); only # is dead
+      const action = form.getAttribute('action');
+      const hasAction = action !== null && action !== '#';
+      // React attaches onSubmit via addEventListener — check React fiber props
+      const reactPropsKey = Object.keys(form).find(k => k.startsWith('__reactProps$'));
+      const reactProps = reactPropsKey ? form[reactPropsKey] : null;
+      const hasReactHandler = !!(reactProps && (reactProps.onSubmit || reactProps.action));
+      // Next.js Server Actions inject a hidden $ACTION_ID input
+      const hasServerAction = !!(form.querySelector('input[name^="$ACTION"]'));
       const hasJsHandler = !!(form.onsubmit || form.getAttribute('onsubmit') ||
-        form.getAttribute('@submit') || form.getAttribute('data-ajax'));
+        form.getAttribute('@submit') || form.getAttribute('data-ajax') ||
+        hasReactHandler || hasServerAction);
       const unlabelled = fields.filter(f => {
         if (f.getAttribute('aria-label') || f.getAttribute('aria-labelledby')) return false;
         if (f.id && document.querySelector(`label[for="${f.id}"]`)) return false;
@@ -186,8 +200,21 @@ async function checkPage(page, pageUrl) {
     const imageUrls = [];
     document.querySelectorAll('img[src]').forEach(img => {
       const src = img.getAttribute('src') || '';
-      if (src && !src.startsWith('data:')) imageUrls.push(src);
+      // Skip data URIs and Next.js optimised URLs (/_next/image is already compressed)
+      if (src && !src.startsWith('data:') && !src.startsWith('/_next/image')) {
+        imageUrls.push(src);
+      }
     });
+
+    // ── Visible text for proofreading ──────────────────────────────────────
+    const textParts = [];
+    document.querySelectorAll('h1, h2, h3, h4, h5, h6, p, li, td, th, label, button, a').forEach(el => {
+      if (hidden(el)) return;
+      if (el.querySelectorAll('p, div, li').length > 2) return;
+      const t = visText(el);
+      if (t.length > 3 && t.length < 500) textParts.push(t);
+    });
+    const pageText = [...new Set(textParts)].join('\n').slice(0, 5000);
 
     return {
       h1Count, h2Count, h1Texts,
@@ -201,6 +228,7 @@ async function checkPage(page, pageUrl) {
       links: [...new Set(allHrefs)],
       wpDetected, wpVersion,
       imageUrls: [...new Set(imageUrls)].slice(0, 50),
+      pageText,
     };
   }, PLACEHOLDER_IMG_HOSTS);
 
@@ -293,7 +321,7 @@ async function checkPage(page, pageUrl) {
     issues.push({ type: 'security', message: versionMsg, url: pageUrl });
   }
 
-  return { links: data.links, issues, wpDetected: data.wpDetected, imageUrls: data.imageUrls };
+  return { links: data.links, issues, wpDetected: data.wpDetected, imageUrls: data.imageUrls, pageText: data.pageText };
 }
 
 module.exports = { checkSEO: checkPage };

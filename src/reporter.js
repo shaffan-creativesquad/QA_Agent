@@ -18,6 +18,8 @@ const TYPE_LABELS = {
   performance:   'Performance',
   security:      'Security',
   wp_security:   'WordPress Security',
+  proofreading:  'Proofreading',
+  ai_content:    'AI-Generated Content',
 };
 
 function buildReport(pages) {

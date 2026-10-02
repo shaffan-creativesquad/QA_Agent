@@ -1,9 +1,8 @@
 'use strict';
 
+const { chromium } = require('playwright');
 const { checkSEO } = require('./checks/seo');
 const store = require('./store');
-
-const MAX_PAGES = 150;
 
 const VIEWPORTS = {
   desktop: { width: 1440, height: 900 },
@@ -26,38 +25,7 @@ function normalizeUrl(href) {
   } catch { return href; }
 }
 
-// ── Launch browser (puppeteer-core + sparticuz on Vercel, system Chrome locally) ──
-async function launchBrowser() {
-  const puppeteer = require('puppeteer-core');
-
-  let executablePath;
-  let args = [];
-
-  if (process.env.VERCEL || process.env.USE_SERVERLESS_CHROMIUM) {
-    const chromiumPkg = require('@sparticuz/chromium');
-    executablePath = await chromiumPkg.executablePath();
-    args = chromiumPkg.args;
-  } else {
-    // Local dev — use system Chrome/Chromium
-    executablePath = process.env.CHROME_PATH || (
-      process.platform === 'win32'
-        ? 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-        : process.platform === 'darwin'
-          ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-          : '/usr/bin/google-chrome-stable'
-    );
-    args = ['--no-sandbox', '--disable-setuid-sandbox'];
-  }
-
-  return puppeteer.launch({
-    executablePath,
-    args,
-    headless: true,
-    ignoreHTTPSErrors: true,
-  });
-}
-
-// ── Annotated screenshot: outline problematic elements, capture, clean up ─────
+// ── Annotated screenshot ──────────────────────────────────────────────────────
 async function takeAnnotatedScreenshot(page) {
   const count = await page.evaluate((placeholderHosts) => {
     document.querySelectorAll('[data-qa-type]').forEach(el => el.removeAttribute('data-qa-type'));
@@ -72,7 +40,10 @@ async function takeAnnotatedScreenshot(page) {
 
     document.querySelectorAll('img').forEach(img => {
       const src = (img.src || '').toLowerCase();
-      const broken = img.complete && img.naturalWidth === 0 && src && !src.startsWith('data:');
+      if (!src || src.startsWith('data:') || src.includes('/_next/image')) return;
+      const isLazy = img.getAttribute('loading') === 'lazy';
+      const nearViewport = img.getBoundingClientRect().top < window.innerHeight * 2;
+      const broken = img.complete && img.naturalWidth === 0 && (!isLazy || nearViewport);
       const placeholder = placeholderHosts.some(h => src.includes(h));
       if (broken) mark(img, 'broken');
       else if (placeholder) mark(img, 'placeholder');
@@ -102,8 +73,13 @@ async function takeAnnotatedScreenshot(page) {
     document.querySelectorAll('form').forEach(form => {
       const fields = form.querySelectorAll('input:not([type=hidden]), textarea, select');
       const hasSubmit = !!form.querySelector('[type=submit], button:not([type=button]):not([type=reset])');
-      const hasAction = !!(form.getAttribute('action') && form.getAttribute('action') !== '#');
-      const hasJsHandler = !!(form.onsubmit || form.getAttribute('onsubmit'));
+      const action = form.getAttribute('action');
+      const hasAction = action !== null && action !== '#';
+      const reactPropsKey = Object.keys(form).find(k => k.startsWith('__reactProps$'));
+      const reactProps = reactPropsKey ? form[reactPropsKey] : null;
+      const hasReactHandler = !!(reactProps && (reactProps.onSubmit || reactProps.action));
+      const hasServerAction = !!(form.querySelector('input[name^="$ACTION"]'));
+      const hasJsHandler = !!(form.onsubmit || form.getAttribute('onsubmit') || hasReactHandler || hasServerAction);
       if (fields.length > 0 && hasSubmit && !hasAction && !hasJsHandler) mark(form, 'dead-form');
     });
 
@@ -130,18 +106,21 @@ async function takeAnnotatedScreenshot(page) {
   return buf;
 }
 
-// ── Visit a single page ───────────────────────────────────────────────────────
-async function visitPage(browser, url, index, scanId) {
+// ── Visit single page ─────────────────────────────────────────────────────────
+async function visitPage(browser, url, index, scanId, { skipScreenshots = false } = {}) {
   const result = {
     url, status: null, loadTimeMs: null,
     issues: [],
     screenshots: { annotated: null, desktop: null, tablet: null, mobile: null },
-    seo: null, _desktopBase64: null,
+    seo: null, _desktopBase64: null, _pageText: null,
   };
 
-  const page = await browser.newPage();
-  await page.setViewport(VIEWPORTS.desktop);
-  await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 QA-Agent/1.0');
+  const context = await browser.newContext({
+    viewport: VIEWPORTS.desktop,
+    ignoreHTTPSErrors: true,
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 QA-Agent/1.0',
+  });
+  const page = await context.newPage();
 
   const jsErrors = [];
   const failedResources = [];
@@ -168,7 +147,7 @@ async function visitPage(browser, url, index, scanId) {
     const t0 = Date.now();
     let response;
     try {
-      response = await page.goto(url, { waitUntil: 'networkidle2', timeout: 30000 });
+      response = await page.goto(url, { waitUntil: 'load', timeout: 30000 });
     } catch (err) {
       result.issues.push({ type: 'load_failure', message: `Page failed to load: ${err.message}`, url });
       return result;
@@ -188,6 +167,7 @@ async function visitPage(browser, url, index, scanId) {
     result.seo = { links: check.links };
     result.wpDetected = check.wpDetected || false;
     result.imageUrls = check.imageUrls || [];
+    result._pageText = check.pageText || '';
     result.issues.push(...check.issues);
 
     const RESOURCE_LABELS = {
@@ -206,31 +186,33 @@ async function visitPage(browser, url, index, scanId) {
       result.issues.push({ type: 'js_error', message: `JS error: ${err.slice(0, 300)}`, url });
     }
 
-    // ── Annotated screenshot ──────────────────────────────────────────────────
-    await page.setViewport(VIEWPORTS.desktop);
-    await new Promise(r => setTimeout(r, 300));
+    if (!skipScreenshots) {
+      // ── Annotated screenshot ────────────────────────────────────────────────
+      await page.setViewportSize(VIEWPORTS.desktop);
+      await page.waitForTimeout(300);
 
-    const annotatedBuf = await takeAnnotatedScreenshot(page);
-    if (annotatedBuf) {
-      const fname = `page-${index}-annotated.jpg`;
-      await store.setScreenshot(`${scanId}/${fname}`, annotatedBuf);
-      result.screenshots.annotated = `/screenshots/${scanId}/${fname}`;
-    }
+      const annotatedBuf = await takeAnnotatedScreenshot(page);
+      if (annotatedBuf) {
+        const fname = `page-${index}-annotated.jpg`;
+        await store.setScreenshot(`${scanId}/${fname}`, annotatedBuf);
+        result.screenshots.annotated = `/screenshots/${scanId}/${fname}`;
+      }
 
-    // ── Viewport screenshots ──────────────────────────────────────────────────
-    for (const [vp, size] of Object.entries(VIEWPORTS)) {
-      await page.setViewport(size);
-      await new Promise(r => setTimeout(r, 250));
-      const buf = await page.screenshot({ fullPage: true, type: 'jpeg', quality: 80 });
-      const fname = `page-${index}-${vp}.jpg`;
-      await store.setScreenshot(`${scanId}/${fname}`, buf);
-      result.screenshots[vp] = `/screenshots/${scanId}/${fname}`;
-      if (vp === 'desktop') result._desktopBase64 = buf.toString('base64');
+      // ── Viewport screenshots ──────────────────────────────────────────────
+      for (const [vp, size] of Object.entries(VIEWPORTS)) {
+        await page.setViewportSize(size);
+        await page.waitForTimeout(250);
+        const buf = await page.screenshot({ fullPage: true, type: 'jpeg', quality: 80 });
+        const fname = `page-${index}-${vp}.jpg`;
+        await store.setScreenshot(`${scanId}/${fname}`, buf);
+        result.screenshots[vp] = `/screenshots/${scanId}/${fname}`;
+        if (vp === 'desktop') result._desktopBase64 = buf.toString('base64');
+      }
     }
   } catch (err) {
     result.issues.push({ type: 'load_failure', message: `Unexpected error: ${err.message}`, url });
   } finally {
-    await page.close();
+    await context.close();
   }
 
   return result;
@@ -238,9 +220,9 @@ async function visitPage(browser, url, index, scanId) {
 
 const BATCH_SIZE = 12;
 
-// ── Crawl entire site (or resume from a batch) ────────────────────────────────
+// ── Crawl entire site (or resume a batch) ─────────────────────────────────────
 async function crawlSite(startUrl, scanId, onProgress, opts = {}) {
-  const { resumeQueue = null, visitedUrls = null, pageOffset = 0 } = opts;
+  const { resumeQueue = null, visitedUrls = null, pageOffset = 0, skipScreenshots = false, maxPages = BATCH_SIZE } = opts;
 
   const base = new URL(startUrl);
   const visited = visitedUrls || new Set();
@@ -256,10 +238,10 @@ async function crawlSite(startUrl, scanId, onProgress, opts = {}) {
   }
 
   const results = [];
-  const browser = await launchBrowser();
+  const browser = await chromium.launch({ headless: true });
 
   try {
-    while (queue.length > 0 && results.length < BATCH_SIZE) {
+    while (queue.length > 0 && results.length < maxPages) {
       const url = queue.shift();
       const normalized = normalizeUrl(url);
       if (visited.has(normalized)) continue;
@@ -271,7 +253,7 @@ async function crawlSite(startUrl, scanId, onProgress, opts = {}) {
         Math.min(Math.round((results.length / Math.max(queue.length + results.length + 1, 1)) * 55), 55)
       );
 
-      const pageResult = await visitPage(browser, url, globalIdx, scanId);
+      const pageResult = await visitPage(browser, url, globalIdx, scanId, { skipScreenshots });
       results.push(pageResult);
 
       for (const href of (pageResult.seo?.links ?? [])) {
@@ -281,7 +263,7 @@ async function crawlSite(startUrl, scanId, onProgress, opts = {}) {
             const n = normalizeUrl(abs.href);
             if (!queued.has(n)) { queued.add(n); queue.push(abs.href); }
           }
-        } catch { /* skip invalid hrefs */ }
+        } catch { /* skip */ }
       }
     }
   } finally {
@@ -293,7 +275,7 @@ async function crawlSite(startUrl, scanId, onProgress, opts = {}) {
 
 // ── Re-scan a single page ─────────────────────────────────────────────────────
 async function scanSinglePage(url, scanId, index) {
-  const browser = await launchBrowser();
+  const browser = await chromium.launch({ headless: true });
   try {
     return await visitPage(browser, url, index, scanId);
   } finally {

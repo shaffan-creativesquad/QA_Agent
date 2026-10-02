@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>QA Agent</title>
+  <title>QA Agent — Website Quality Scanner</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -26,102 +26,154 @@
 <main class="main">
   <div class="container">
 
-    <!-- URL form -->
-    <div class="card" id="form-card">
-      <div class="form-heading">
-        <h2>Website QA Scanner</h2>
-        <p>Automatically crawls every page and checks for broken images, dead links, form issues, JS errors, performance, WordPress security, and more.</p>
-      </div>
-      <form id="scan-form" autocomplete="off">
-        <div class="form-row">
-          <div class="field">
-            <label for="url-input">Website URL</label>
-            <input type="url" id="url-input"
-              placeholder="https://example.com   or   http://localhost:8888"
-              required>
+    <!-- ── Top-level tab bar ── -->
+    <div class="main-tab-bar">
+      <button class="main-tab active" data-tab="technical">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+        Technical Scan
+      </button>
+      <button class="main-tab" data-tab="content">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="17" y1="10" x2="3" y2="10"/><line x1="21" y1="6" x2="3" y2="6"/><line x1="21" y1="14" x2="3" y2="14"/><line x1="17" y1="18" x2="3" y2="18"/></svg>
+        Content Scan
+      </button>
+    </div>
+
+    <!-- ══════════════════════════════════════════ -->
+    <!-- TECHNICAL SCAN TAB                         -->
+    <!-- ══════════════════════════════════════════ -->
+    <div id="tab-technical">
+
+      <div class="card" id="form-card">
+        <div class="form-heading">
+          <h2>Technical Scan</h2>
+          <p>Checks every page for broken links, missing SEO, JS errors, image issues, AI visual review, and WordPress security.</p>
+          <div class="feature-tags">
+            <span class="ftag">Broken Links</span>
+            <span class="ftag">SEO &amp; Headings</span>
+            <span class="ftag">AI Visual Review</span>
+            <span class="ftag">WordPress Security</span>
+            <span class="ftag">Performance</span>
+            <span class="ftag">JS Errors</span>
           </div>
-          <button type="submit" class="btn-start" id="start-btn">
-            <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
-            Scan Site
-          </button>
         </div>
-        <p class="hint">No configuration needed — QA Agent discovers all pages automatically (up to 150 pages)</p>
-      </form>
-    </div>
-
-    <!-- Progress -->
-    <div class="card hidden" id="progress-card">
-      <div class="prog-top">
-        <span id="prog-title">Scanning…</span>
-        <span class="chip" id="status-chip">running</span>
-      </div>
-      <div class="prog-track"><div class="prog-bar" id="prog-bar"></div></div>
-
-      <!-- Scan steps -->
-      <div class="steps" id="scan-steps">
-        <div class="step" data-phase="crawl">
-          <div class="step-dot"></div>
-          <div class="step-label">Crawling</div>
-        </div>
-        <div class="step-line"></div>
-        <div class="step" data-phase="links">
-          <div class="step-dot"></div>
-          <div class="step-label">Links</div>
-        </div>
-        <div class="step-line"></div>
-        <div class="step" data-phase="images">
-          <div class="step-dot"></div>
-          <div class="step-label">Images</div>
-        </div>
-        <div class="step-line"></div>
-        <div class="step" data-phase="ai">
-          <div class="step-dot"></div>
-          <div class="step-label">AI Review</div>
-        </div>
-        <div class="step-line"></div>
-        <div class="step" data-phase="wordpress">
-          <div class="step-dot"></div>
-          <div class="step-label">WordPress</div>
-        </div>
+        <form id="scan-form" autocomplete="off">
+          <div class="form-row">
+            <div class="field">
+              <label for="url-input">Website URL</label>
+              <div class="url-input-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <input type="url" id="url-input" placeholder="https://example.com  or  http://localhost:8888" required>
+              </div>
+            </div>
+            <button type="submit" class="btn-start" id="start-btn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+              Scan Site
+            </button>
+          </div>
+          <p class="hint">Auto-discovers all pages — no configuration needed (up to 150 pages)</p>
+        </form>
       </div>
 
-      <div class="log" id="log"></div>
-    </div>
+      <div class="card hidden" id="progress-card">
+        <div class="prog-top">
+          <span class="prog-title-text" id="prog-title">Scanning…</span>
+          <span class="chip" id="status-chip">running</span>
+        </div>
+        <div class="prog-track"><div class="prog-bar" id="prog-bar"></div></div>
+        <div class="steps" id="scan-steps">
+          <div class="step" data-phase="crawl"><div class="step-dot"></div><div class="step-label">Crawling</div></div>
+          <div class="step-line"></div>
+          <div class="step" data-phase="links"><div class="step-dot"></div><div class="step-label">Links</div></div>
+          <div class="step-line"></div>
+          <div class="step" data-phase="images"><div class="step-dot"></div><div class="step-label">Images</div></div>
+          <div class="step-line"></div>
+          <div class="step" data-phase="ai"><div class="step-dot"></div><div class="step-label">AI Review</div></div>
+          <div class="step-line"></div>
+          <div class="step" data-phase="wordpress"><div class="step-dot"></div><div class="step-label">WordPress</div></div>
+        </div>
+        <div class="log" id="log"></div>
+      </div>
 
-    <!-- Results -->
-    <div id="results" class="hidden">
-
-      <!-- 4 summary numbers -->
-      <div class="summary-strip">
-        <div class="sum-box">
-          <span class="sum-n" id="s-total">0</span>
-          <span class="sum-l">Total Issues</span>
+      <div id="results" class="hidden">
+        <div class="summary-strip">
+          <div class="sum-box"><span class="sum-n" id="s-total">0</span><span class="sum-l">Total Issues</span></div>
+          <div class="sum-box"><span class="sum-n" id="s-pages">0</span><span class="sum-l">Pages Scanned</span></div>
+          <div class="sum-box"><span class="sum-n" id="s-affected">0</span><span class="sum-l">Pages with Issues</span></div>
+          <div class="sum-box"><span class="sum-n" id="s-avgload">—</span><span class="sum-l">Avg Load Time</span></div>
         </div>
-        <div class="sum-box">
-          <span class="sum-n" id="s-pages">0</span>
-          <span class="sum-l">Pages Scanned</span>
-        </div>
-        <div class="sum-box">
-          <span class="sum-n" id="s-affected">0</span>
-          <span class="sum-l">Pages with Issues</span>
-        </div>
-        <div class="sum-box">
-          <span class="sum-n" id="s-avgload">—</span>
-          <span class="sum-l">Avg Load Time</span>
+        <div class="card" id="breakdown"></div>
+        <div id="pages"></div>
+        <div class="bottom-bar">
+          <button class="btn-new" id="new-btn">Scan Another Site</button>
         </div>
       </div>
 
-      <!-- Category breakdown -->
-      <div class="card" id="breakdown"></div>
+    </div><!-- /tab-technical -->
 
-      <!-- Per-page results -->
-      <div id="pages"></div>
+    <!-- ══════════════════════════════════════════ -->
+    <!-- CONTENT SCAN TAB                           -->
+    <!-- ══════════════════════════════════════════ -->
+    <div id="tab-content" class="hidden">
 
-      <div class="bottom-bar">
-        <button class="btn-new" id="new-btn">Scan Another Site</button>
+      <div class="card" id="content-form-card">
+        <div class="form-heading">
+          <h2>Content Scan</h2>
+          <p>Analyses every page for grammar, spelling, tone issues, and AI-generated content signals.</p>
+          <div class="feature-tags">
+            <span class="ftag ftag-content">Spelling &amp; Grammar</span>
+            <span class="ftag ftag-content">Tone &amp; Clarity</span>
+            <span class="ftag ftag-content">Brand Consistency</span>
+            <span class="ftag ftag-content">AI Content Detection</span>
+            <span class="ftag ftag-content">Placeholder Text</span>
+          </div>
+        </div>
+        <form id="content-scan-form" autocomplete="off">
+          <div class="form-row">
+            <div class="field">
+              <label for="content-url-input">Website URL</label>
+              <div class="url-input-wrap">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+                <input type="url" id="content-url-input" placeholder="https://example.com  or  http://localhost:8888" required>
+              </div>
+            </div>
+            <button type="submit" class="btn-start btn-start-content" id="content-start-btn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21"/></svg>
+              Analyse Content
+            </button>
+          </div>
+          <p class="hint">No screenshots taken — content-only scan is faster than a full technical scan</p>
+        </form>
       </div>
 
-    </div>
+      <div class="card hidden" id="content-progress-card">
+        <div class="prog-top">
+          <span class="prog-title-text" id="content-prog-title">Analysing…</span>
+          <span class="chip" id="content-status-chip">running</span>
+        </div>
+        <div class="prog-track"><div class="prog-bar" id="content-prog-bar"></div></div>
+        <div class="steps" id="content-scan-steps">
+          <div class="step" data-phase="crawl"><div class="step-dot"></div><div class="step-label">Crawling</div></div>
+          <div class="step-line"></div>
+          <div class="step" data-phase="writing"><div class="step-dot"></div><div class="step-label">Writing Analysis</div></div>
+        </div>
+        <div class="log" id="content-log"></div>
+      </div>
+
+      <div id="content-results" class="hidden">
+        <div class="summary-strip">
+          <div class="sum-box sum-box-content"><span class="sum-n" id="cs-total">0</span><span class="sum-l">Total Issues</span></div>
+          <div class="sum-box sum-box-content"><span class="sum-n" id="cs-pages">0</span><span class="sum-l">Pages Analysed</span></div>
+          <div class="sum-box sum-box-content"><span class="sum-n" id="cs-affected">0</span><span class="sum-l">Pages with Issues</span></div>
+          <div class="sum-box sum-box-content"><span class="sum-n" id="cs-proof">—</span><span class="sum-l">Avg AI Score</span></div>
+        </div>
+        <div id="content-pages"></div>
+        <div class="bottom-bar">
+          <button class="btn-new" id="content-new-btn">Scan Another Site</button>
+        </div>
+      </div>
+
+    </div><!-- /tab-content -->
+
   </div>
 </main>
 

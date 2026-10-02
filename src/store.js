@@ -33,7 +33,7 @@ function pack(scan) {
     delete d._visitedUrls;
   }
   // Strip large temporary fields before persisting
-  d.pages = (d.pages || []).map(({ _desktopBase64, ...rest }) => rest);
+  d.pages = (d.pages || []).map(({ _desktopBase64, _pageText, ...rest }) => rest);
   return d;
 }
 

@@ -9,6 +9,7 @@ const { checkLinks } = require('./src/checks/links');
 const { checkImageSizes } = require('./src/checks/images');
 const { checkWordPressSecurity } = require('./src/checks/wp-security');
 const { analyzeScreenshot } = require('./src/checks/visual');
+const { analyzePageContent } = require('./src/checks/content-analysis');
 const { buildReport } = require('./src/reporter');
 const store = require('./src/store');
 
@@ -57,31 +58,11 @@ app.post('/api/scan', async (req, res) => {
   await store.setScan(id, scan);
   res.json({ id });
 
-  if (process.env.VERCEL) {
-    // Serverless: delegate to QStash so the scan runs in a separate invocation
-    const { Client } = require('@upstash/qstash');
-    const client = new Client({ token: process.env.QSTASH_TOKEN });
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : `https://${req.headers.host}`;
-
-    client.publishJSON({
-      url: `${baseUrl}/api/internal/process`,
-      body: { scanId: id, url },
-      timeout: 800,
-    }).catch(async err => {
-      console.error('[QStash publish error]', err);
-      const s = await store.getScan(id);
-      if (s) { s.status = 'error'; addLog(s, `Failed to queue scan: ${err.message}`); await store.setScan(id, s); }
-    });
-  } else {
-    // Local dev: fire-and-forget (server stays alive)
-    runScan(id, url).catch(async err => {
-      console.error('[scan error]', err);
-      const s = await store.getScan(id);
-      if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); await store.setScan(id, s); }
-    });
-  }
+  runScan(id, url).catch(async err => {
+    console.error('[scan error]', err);
+    const s = await store.getScan(id);
+    if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); await store.setScan(id, s); }
+  });
 });
 
 // ── GET /api/scan/:id ─────────────────────────────────────────────────────────
@@ -92,43 +73,74 @@ app.get('/api/scan/:id', async (req, res) => {
   const { _visitedUrls, _remainingQueue, ...pub } = scan;
   res.json({
     ...pub,
-    pages: (scan.pages || []).map(({ _desktopBase64, imageUrls, ...rest }) => rest),
+    pages: (scan.pages || []).map(({ _desktopBase64, _pageText, imageUrls, ...rest }) => rest),
   });
 });
 
-// ── POST /api/internal/process  (QStash webhook — runs the actual scan) ───────
-// Vercel calls this endpoint from QStash. maxDuration: 800 keeps it alive.
+// ── POST /api/content-scan ───────────────────────────────────────────────────
 
-app.post('/api/internal/process', async (req, res) => {
-  const { scanId, url } = req.body || {};
-  if (!scanId) return res.status(400).json({ error: 'Missing scanId' });
-
-  try {
-    await runScan(scanId, url);
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('[process error]', err);
-    const s = await store.getScan(scanId);
-    if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); await store.setScan(scanId, s); }
-    res.status(500).json({ error: err.message });
+app.post('/api/content-scan', async (req, res) => {
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ error: 'URL is required' });
+  try { new URL(url); } catch {
+    return res.status(400).json({ error: 'Invalid URL — include the protocol (https://...)' });
   }
+
+  const id = crypto.randomUUID();
+  const scan = {
+    id, url, scanType: 'content',
+    status: 'running',
+    progress: 0,
+    log: [],
+    pages: [],
+    report: null,
+    startedAt: new Date().toISOString(),
+    hasMore: false,
+    remainingCount: 0,
+    phases: { crawl: 'pending', writing: 'pending' },
+  };
+
+  await store.setScan(id, scan);
+  res.json({ id });
+
+  runContentScan(id, url).catch(async err => {
+    console.error('[content-scan error]', err);
+    const s = await store.getScan(id);
+    if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); await store.setScan(id, s); }
+  });
 });
 
-// ── POST /api/internal/continue  (QStash webhook — continues next batch) ──────
+// ── GET /api/content-scan/:id ────────────────────────────────────────────────
 
-app.post('/api/internal/continue', async (req, res) => {
-  const { scanId } = req.body || {};
-  if (!scanId) return res.status(400).json({ error: 'Missing scanId' });
+app.get('/api/content-scan/:id', async (req, res) => {
+  const scan = await store.getScan(req.params.id);
+  if (!scan) return res.status(404).json({ error: 'Scan not found' });
+  const { _visitedUrls, _remainingQueue, ...pub } = scan;
+  res.json({
+    ...pub,
+    pages: (scan.pages || []).map(({ _desktopBase64, _pageText, imageUrls, ...rest }) => rest),
+  });
+});
 
-  try {
-    await runAnalysis(scanId, [], { isContinuation: true });
-    res.json({ ok: true });
-  } catch (err) {
-    console.error('[continue process error]', err);
-    const s = await store.getScan(scanId);
-    if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); await store.setScan(scanId, s); }
-    res.status(500).json({ error: err.message });
-  }
+// ── POST /api/content-scan/:id/more ──────────────────────────────────────────
+
+app.post('/api/content-scan/:id/more', async (req, res) => {
+  const scan = await store.getScan(req.params.id);
+  if (!scan) return res.status(404).json({ error: 'Scan not found' });
+  if (scan.status === 'running' || scan.status === 'analyzing') return res.status(400).json({ error: 'Scan already running' });
+  if (!scan._remainingQueue?.length) return res.status(400).json({ error: 'No more pages to scan' });
+
+  res.json({ ok: true });
+
+  runContentBatch(scan.id, scan.url, {
+    resumeQueue: scan._remainingQueue,
+    visitedUrls: scan._visitedUrls,
+    pageOffset:  scan._pageOffset || scan.pages.length,
+  }).catch(async err => {
+    console.error('[content-more error]', err);
+    const s = await store.getScan(scan.id);
+    if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); await store.setScan(scan.id, s); }
+  });
 });
 
 // ── POST /api/scan/:id/continue ───────────────────────────────────────────────
@@ -141,25 +153,11 @@ app.post('/api/scan/:id/continue', async (req, res) => {
 
   res.json({ ok: true });
 
-  if (process.env.VERCEL) {
-    const { Client } = require('@upstash/qstash');
-    const client = new Client({ token: process.env.QSTASH_TOKEN });
-    const baseUrl = process.env.VERCEL_URL
-      ? `https://${process.env.VERCEL_URL}`
-      : `https://${req.headers.host}`;
-
-    client.publishJSON({
-      url: `${baseUrl}/api/internal/continue`,
-      body: { scanId: scan.id },
-      timeout: 800,
-    }).catch(console.error);
-  } else {
-    runAnalysis(scan.id, [], { isContinuation: true }).catch(async err => {
-      console.error('[continue error]', err);
-      const s = await store.getScan(scan.id);
-      if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); await store.setScan(scan.id, s); }
-    });
-  }
+  runAnalysis(scan.id, [], { isContinuation: true }).catch(async err => {
+    console.error('[continue error]', err);
+    const s = await store.getScan(scan.id);
+    if (s) { s.status = 'error'; addLog(s, `Fatal: ${err.message}`); await store.setScan(scan.id, s); }
+  });
 });
 
 // ── GET /api/scan/:id/export ──────────────────────────────────────────────────
@@ -178,7 +176,7 @@ app.get('/api/scan/:id/export', async (req, res) => {
     .join('');
 
   const pagesHtml = [...scan.pages]
-    .map(({ _desktopBase64, imageUrls, ...p }) => p)
+    .map(({ _desktopBase64, _pageText, imageUrls, ...p }) => p)
     .sort((a, b) => (b.issues || []).length - (a.issues || []).length)
     .map(p => {
       const issues = p.issues || [];
@@ -227,6 +225,8 @@ app.get('/api/scan/:id/export', async (req, res) => {
   .pill-js_error,.pill-http_error,.pill-load_failure{background:#fef2f2;color:#b91c1c;border-color:#fecaca}
   .pill-performance{background:#f0fdf4;color:#166534;border-color:#bbf7d0}
   .pill-missing_resource{background:#fef2f2;color:#991b1b;border-color:#fecaca}
+  .pill-proofreading{background:#ecfeff;color:#164e63;border-color:#a5f3fc}
+  .pill-ai_content{background:#faf5ff;color:#6b21a8;border-color:#d8b4fe}
   .summary-table{background:#fff;border:1px solid #e2e8f0;border-radius:10px;overflow:hidden;margin-bottom:1.5rem}
   .summary-table h2{font-size:.85rem;padding:.75rem 1rem;background:#f8fafc;border-bottom:1px solid #e2e8f0;color:#718096;text-transform:uppercase;letter-spacing:.05em}
 </style>
@@ -275,6 +275,8 @@ app.post('/api/scan/:id/rescan', async (req, res) => {
       fresh.issues.push(...aiIssues);
       delete fresh._desktopBase64;
     }
+
+    delete fresh._pageText;
 
     if (fresh.imageUrls?.length) {
       const origin = new URL(pageUrl).origin;
@@ -473,6 +475,123 @@ async function runAnalysis(scanId, newPages, { isContinuation = false } = {}, _s
   await store.setScan(scanId, scan);
 }
 
+// ── Content scan orchestration ────────────────────────────────────────────────
+
+// Shared helper: crawl 2 pages + analyse them, then stop and wait
+async function runContentBatch(scanId, url, { resumeQueue = null, visitedUrls = null, pageOffset = 0 } = {}) {
+  const scan = await store.getScan(scanId);
+  const log  = msg => addLog(scan, msg);
+
+  setPhase(scan, 'crawl', 'running');
+  scan.status = 'running';
+  await store.setScan(scanId, scan);
+
+  let crawlResult;
+  try {
+    crawlResult = await crawlSite(url, scanId, (msg, pct) => {
+      log(msg); scan.progress = Math.round(pct * 0.5);
+    }, { skipScreenshots: true, maxPages: 2, resumeQueue, visitedUrls, pageOffset });
+  } catch (err) {
+    setPhase(scan, 'crawl', 'error');
+    log(`Crawl failed: ${err.message}`);
+    scan.status = 'error';
+    await store.setScan(scanId, scan);
+    return;
+  }
+
+  if (crawlResult.pages.length === 0) {
+    scan.status = 'done'; scan.progress = 100;
+    await store.setScan(scanId, scan);
+    return;
+  }
+
+  setPhase(scan, 'crawl', 'done');
+  for (const page of crawlResult.pages) page.issues = [];
+  scan.pages.push(...crawlResult.pages);
+
+  // Store queue state for possible next batch
+  scan._remainingQueue = crawlResult.remainingQueue;
+  scan._visitedUrls    = crawlResult.visitedUrls;
+  scan._pageOffset     = pageOffset + crawlResult.pages.length;
+  scan.hasMore         = crawlResult.remainingQueue.length > 0;
+  scan.remainingCount  = crawlResult.remainingQueue.length;
+
+  setPhase(scan, 'writing', 'running');
+  scan.status = 'analyzing';
+  log(`Analysing ${crawlResult.pages.length} page(s)…`);
+  await store.setScan(scanId, scan);
+
+  const analyses = await Promise.all(
+    crawlResult.pages.map(p => analyzePageContent(p._pageText, p.url))
+  );
+
+  let totalProof = 0, totalAI = 0;
+  for (let j = 0; j < crawlResult.pages.length; j++) {
+    const page     = crawlResult.pages[j];
+    const analysis = analyses[j];
+
+    page.issues.push(...analysis.proofIssues, ...analysis.aiIssues);
+    page.aiScore   = analysis.score;
+    page.aiVerdict = analysis.verdict;
+    totalProof += analysis.proofIssues.length;
+    totalAI    += analysis.aiIssues.length;
+
+    if (analysis.proofIssues.length) log(`  → ${page.url}: ${analysis.proofIssues.length} writing issue(s)`);
+    if (analysis.score !== null)     log(`  → ${page.url}: AI score ${analysis.score}/100 — ${analysis.verdict}`);
+    if (analysis.score === null)     log(`  → ${page.url}: AI detection skipped`);
+
+    delete page._pageText;
+    delete page._desktopBase64;
+  }
+
+  setPhase(scan, 'writing', 'done');
+
+  const scoredPages = scan.pages.filter(p => p.aiScore !== null && p.aiScore !== undefined);
+  scan.avgAiScore = scoredPages.length
+    ? Math.round(scoredPages.reduce((s, p) => s + p.aiScore, 0) / scoredPages.length)
+    : null;
+
+  scan.report   = buildReport(scan.pages);
+  scan.status   = 'done';
+  scan.progress = 100;
+
+  const moreMsg = scan.hasMore ? ` (${scan.remainingCount} page(s) remaining — click Scan More to continue)` : ' — all pages done!';
+  log(`Batch done — ${totalProof} writing issue(s), ${totalAI} AI signal(s).${moreMsg}`);
+  await store.setScan(scanId, scan);
+}
+
+async function runContentScan(scanId, url) {
+  const scan = await store.getScan(scanId);
+  addLog(scan, `Starting content scan of ${url}`);
+  if (!process.env.GOOGLE_API_KEY) addLog(scan, 'Warning: GOOGLE_API_KEY not set — writing analysis will be skipped');
+  await store.setScan(scanId, scan);
+  await runContentBatch(scanId, url);
+}
+
+// ── POST /api/test-detection ──────────────────────────────────────────────────
+// Quick accuracy check: paste any text, get score + comparison guide
+
+app.post('/api/test-detection', async (req, res) => {
+  const { text } = req.body || {};
+  if (!text || text.trim().length < 20) {
+    return res.status(400).json({ error: 'Provide at least 20 characters of text' });
+  }
+  const result = await analyzePageContent(text.trim(), 'test');
+  res.json({
+    score:       result.score,
+    verdict:     result.verdict,
+    aiSentences: result.aiIssues.map(i => ({ text: i._text, reason: i._reason, fix: i._fix })),
+    proofIssues: result.proofIssues.map(i => i.message),
+    guide: {
+      '0–20':  'Human Written — personal voice, specific details',
+      '21–40': 'Mostly Human — occasional generic phrases',
+      '41–60': 'Mixed — noticeable AI patterns',
+      '61–80': 'Likely AI — repetitive, vague, transitions',
+      '81–100':'AI Generated — formulaic, zero personality',
+    },
+  });
+});
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const PILL_LABELS = {
@@ -481,18 +600,14 @@ const PILL_LABELS = {
   form: 'Form', html: 'HTML', visual: 'Visual', broken_link: 'Broken Link',
   missing_resource: 'Missing File', js_error: 'JS Error', http_error: 'HTTP Error',
   load_failure: 'Load Fail', performance: 'Performance', security: 'Security',
-  wp_security: 'WP Security',
+  wp_security: 'WP Security', proofreading: 'Proofreading', ai_content: 'AI Content',
 };
 function pillLabel(t) { return PILL_LABELS[t] || t; }
 function esc(s) {
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Start server or export for Vercel ────────────────────────────────────────
+// ── Start server ──────────────────────────────────────────────────────────────
 
-if (process.env.VERCEL) {
-  module.exports = app;
-} else {
-  const PORT = process.env.PORT || 4000;
-  app.listen(PORT, () => console.log(`QA Agent → http://localhost:${PORT}`));
-}
+const PORT = process.env.PORT || 4000;
+app.listen(PORT, () => console.log(`QA Agent → http://localhost:${PORT}`));

@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "profileType": "solo-dev",
+  "detectedFrom": {
+    "gitRemotes": [
+      "https://github.com/shaffan-creativesquad/QA-Agent.git"
+    ],
+    "teamSize": "solo",
+    "aiTools": [
+      "claude"
+    ],
+    "budgetPattern": "none",
+    "hasSharedClaudeSkills": false,
+    "isGitRepo": true,
+    "branchCount": 1,
+    "trackedFileCount": 18,
+    "repoSizeKb": 1,
+    "commitsLast30d": 0,
+    "commitsTotal": 5,
+    "projectAgeDays": 80,
+    "authorCount30d": 0,
+    "activityLevel": "none",
+    "hasAidlcWorkflow": false,
+    "hasPendingProfileInit": false,
+    "remoteReachable": true,
+    "remoteOriginUrl": "https://github.com/shaffan-creativesquad/QA-Agent.git",
+    "remoteBranchCount": 1,
+    "remoteAuthors30d": 0,
+    "upstreamAhead": 0,
+    "upstreamBehind": 0,
+    "remoteProbeSource": "remote-tracking"
+  },
+  "enabledFeatures": {
+    "autoOptimizer": false
+  },
+  "costTracking": "minimal",
+  "confidence": 0.72,
+  "detectedAt": "2026-10-02T21:08:09.424Z",
+  "appliedAt": "2026-10-02T21:08:09.424Z",
+  "rationale": "Git analysis: 158 tracked files, 1 branch (1 local, 1 remote), 5 commits (0 last 30d), 0 authors (30d), none activity, ~1 KB git objects, 80d old. Remote git (https://github.com/shaffan-creativesquad/QA-Agent.git): 1 remote branch, 0 remote authors (30d), via cache. Solo, low-intensity product — branch profiles with token-saving focus."
+}

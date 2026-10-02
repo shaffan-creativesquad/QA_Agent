@@ -4,6 +4,8 @@ async function checkImageSizes(imageUrls, pageUrl, thresholdBytes = 200 * 1024) 
   const issues = [];
 
   await Promise.all(imageUrls.slice(0, 40).map(async (imgUrl) => {
+    // Next.js already compresses images served through /_next/image
+    if (imgUrl.includes('/_next/image')) return;
     try {
       const res = await fetch(imgUrl, {
         method: 'HEAD',

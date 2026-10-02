@@ -55,7 +55,7 @@ Manual QA of a website (checking every page on every device size, every link, ev
 ## 5. User Flow
 
 1. User runs the tool locally (`npm start`) → dashboard opens at `localhost:4000`
-2. User pastes a URL (e.g. `http://localhost:8888/clientsite` or `https://fixoraappliancerepair.ca`) and sets max pages to crawl
+2. User pastes a URL e.g. `http://localhost:8888/clientsite` and sets max pages to crawl
 3. User clicks **Start Scan**
 4. Dashboard shows a live progress log: pages being visited, checks running, AI review in progress
 5. On completion, user sees:
